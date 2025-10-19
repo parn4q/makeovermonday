@@ -1,0 +1,393 @@
+---
+title: "Using an Arima Model to Predict Labor Force Participation"
+execute: 
+    echo: false
+    warning: false
+engine: python
+---
+
+# Introduction
+
+Predicting labor force participation (LFPR) is an essential task for understanding the dynamics of an economy and planning for future labor market needs. Labor force participation—the proportion of the working-age population that is either employed or actively seeking work—serves as a key indicator of economic health, social progress, and demographic change. Accurate forecasts help governments design effective employment policies, social security systems, and education or training programs. For businesses and investors, labor participation predictions inform decisions about production capacity, wage expectations, and workforce availability.
+
+Moreover, shifts in labor force participation can signal broader structural trends, such as aging populations, gender disparities, technological change, or the impact of recessions and policy reforms. By anticipating these shifts, policymakers and economists can better respond to challenges like labor shortages, unemployment cycles, or the transition to automation-driven industries. In short, predicting labor force participation provides critical insight into how human resources evolve alongside economic and social developments.
+
+In this report, we use an ARIMA model to analyze the 
+trend of LFPR and predict future events.  We will split the data into a 80/20 
+train/test split and predict on the test data.  
+
+Thank you to #MakeOverMonday for curating this weeks dataset for me to analyze.
+
+
+```{python}
+import pandas as pd
+import matplotlib.pyplot as plt   # data visualization
+import numpy as np
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.seasonal import seasonal_decompose
+from dateutil.parser import parse
+from statsmodels.graphics.tsaplots import plot_acf
+from statsmodels.tsa.arima.model import ARIMAResults
+from pandas.plotting import autocorrelation_plot
+from statsmodels.tsa.stattools import adfuller
+import itertools
+from joblib import Parallel, delayed
+```
+
+
+```{python}
+data = pd.read_csv("./Labor Force Participation.csv")
+```
+
+```{python}
+data = data.rename(columns = {"Prime-Age LFPR": "lfpr"})
+```
+
+
+```{python}
+data["Date"] = pd.to_datetime(data["Date"], format = "%B %d, %Y")
+
+data = data.sort_values("Date")
+```
+
+
+```{python}
+# Remove "%" and convert to float
+data['lfpr'] = data['lfpr'].str.replace('%', '').astype(float)
+```
+
+# Exploratory Data Analysis
+
+This dataset contains 368 observations that include a date variable and the LFPR.
+The date represents the time the LFPR was observed.  Figure 1 shows the trend from
+January, 1st 1995 to August, 25th 2025.  Starting with the y-axis, over the 10 years,
+the LFPR has been between 79%-85%.  Notice the x-axis has some gaps between the 
+years.  Now for the big picture, we can see the LFPR has increased slightly from 
+the start to 2002.  Then we see a line from 2002 t0 2025.  Finally, the time 
+series is sporadic in 2025.  Why is that? Well the data does not have much data 
+before 2025, and since we are in the year 2025, figure 2 shows the same plot only
+for 2025. We can see the time series is absolutely sporadic, and that it changes 
+every two weeks.  
+
+```{python}
+#| label: fig-LFPR
+#| fig-cap: "Labor Force Participation Rate throughout Time"
+
+
+def plot_df(df, x, y, title="", ylabel='LFPR (%)', dpi=100):
+    plt.figure(figsize=(8,6), dpi=dpi)
+    plt.plot(x, y, color='tab:red')
+    plt.gca().set(title=title, ylabel=ylabel)
+    plt.xticks(rotation = 90)
+    plt.show()
+    
+
+plot_df(data, x=data['Date'], y=data['lfpr'], title='Labor Force Participation Rate (LFPR) throughout Time')
+```
+
+```{python}
+
+data_plot = data.iloc[72:, ].reset_index(drop = False)
+
+```
+
+```{python}
+#| label: fig-LFPR2
+#| fig-cap: "Labor Force Participation Rate throughout 2025"
+
+
+def plot_df(df, x, y, title="", ylabel='LFPR (%)', dpi=100):
+    plt.figure(figsize=(8,6), dpi=dpi)
+    plt.plot(x, y, color='tab:red')
+    plt.gca().set(title=title, ylabel=ylabel)
+    plt.xticks(rotation = 90)
+    plt.show()
+    
+
+plot_df(data_plot, x=data_plot['Date'], y=data_plot['lfpr'], title='Labor Force Participation Rate (LFPR) throughout Time')
+```
+
+```{python}
+
+#| eval: false
+
+# Multiplicative Decomposition 
+multiplicative_decomposition = seasonal_decompose(data_plot["lfpr"], model='multiplicative', period=30)
+
+# Plot
+plt.rcParams.update({'figure.figsize': (10,8)})
+multiplicative_decomposition.plot().suptitle('Multiplicative Decomposition', fontsize=16)
+plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+```
+
+
+We can then use a additive decomposition of this time series into the original, 
+the trend, seasonal effect, and the noise.  There is evidence of a small downward
+trend and a cyclic pattern in the noise.  An ARMA model would do well here.
+
+```{python}
+#| label: fig-LFPR3
+#| fig-cap: "Additive Decomposition of the LFPR Time Series"
+
+# Additive Decomposition
+plt.rcParams.update({'figure.figsize': (8,6)})
+additive_decomposition = seasonal_decompose(data_plot["lfpr"], model='additive', period=30)
+additive_decomposition.plot().suptitle('Additive Decomposition', fontsize=16)
+plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+plt.show()
+```
+
+```{python}
+train = data.iloc[72:360, ].reset_index(drop = True)
+
+test = data.iloc[361:, ].reset_index(drop = True)
+```
+
+```{python}
+#| eval: false
+result = adfuller(train['lfpr'])
+print('ADF Statistic:', result[0])
+print('p-value:', result[1])
+print('Critical Values:', result[4])
+```
+
+
+Should we difference LFPR? Figure 4 shows that there isn't much of a difference
+to do this.  In the analysis not shown here, we use conduct a grid search of 
+possible values for (p, d, q), where p is the autoregressive parameter, d is 
+the amount of times the variable should be differenced, and q is the moving average parameter.
+
+```{python}
+
+#| label: fig-LFPR4
+#| fig-cap: "Comparing the original LFPR to a Differenced LFPR"
+
+train['lfpr_diff'] = train['lfpr'].diff()
+
+#np.mean(train['LFPR_diff'])
+
+plt.figure(figsize=(8, 6))
+plt.plot(train['lfpr'], label='Original High', color='blue')
+plt.plot(train['lfpr_diff'], label='Differenced High', linestyle='--', color='green')
+plt.legend()
+plt.title('Original vs Differenced High')
+plt.show()
+```
+
+
+ARIMA Model
+
+```{python}
+p_val = range(0, 7)  # Example: 0, 1, 2
+d_val = range(0, 2)  # Example: 0, 1
+q_val = range(0, 7)
+```
+
+
+```{python}
+#| eval: false
+results_list = []
+
+for p in p_val:
+    for d in d_val:
+        for q in q_val:
+            try:
+                model = ARIMA(train['lfpr'], order=(p, d, q))
+                model_fit = model.fit()
+
+                # Store p-values with model order
+                pvalues = model_fit.pvalues.to_dict()  # Convert Series to dict
+                pvalues['order'] = (p, d, q)
+                pvalues['aic'] = model_fit.aic
+
+                results_list.append(pvalues)
+
+            except Exception:
+                continue
+
+# Convert to DataFrame
+pvalues_df = pd.DataFrame(results_list)
+
+```
+
+
+
+```{python}
+#| label: tab-arima
+#| tab-cap: "Additive Decomposition of the LFPR Time Series"
+model = ARIMA(train['lfpr'], order=(4,0,2))
+results = model.fit()
+
+results.summary()
+```
+
+SARIMA Model
+
+
+```{python}
+#| eval: false
+
+# Parameter ranges
+p = range(0, 2)
+d = range(0, 2)
+q = range(0, 2)
+P = range(0, 2)
+D = range(0, 2)
+Q = range(0, 2)
+m = range(0, 2)  # change to [12] if data is monthly
+
+# Create parameter grids
+pdq = list(itertools.product(p, d, q))
+seasonal_pdq = list(itertools.product(P, D, Q, m))
+
+# Function to fit one SARIMA model and return AIC + p-values
+def fit_sarima(order, s_order, data):
+    try:
+        model = SARIMAX(
+            data['lfpr'],
+            order=order,
+            seasonal_order=s_order,
+            enforce_stationarity=False,
+            enforce_invertibility=False
+        )
+        results = model.fit(disp=False)
+
+        # Collect model info
+        out = {
+            "order": order,
+            "seasonal_order": s_order,
+            "aic": results.aic
+        }
+
+        # Add all p-values as separate columns
+        for param_name, pval in results.pvalues.items():
+            out[f"pval_{param_name}"] = pval
+
+        return out
+
+    except Exception:
+        # Return NaNs for failed fits
+        return {
+            "order": order,
+            "seasonal_order": s_order,
+            "aic": float("inf")
+        }
+
+# Run in parallel
+results = Parallel(n_jobs=10, verbose=10)(
+    delayed(fit_sarima)(order, s_order, train)
+    for order in pdq
+    for s_order in seasonal_pdq
+)
+
+# Convert results to DataFrame
+results_df = pd.DataFrame(results)
+
+
+```
+
+
+```{python}
+#| eval: false
+model = SARIMAX(train['lfpr'], order=(2,1,2), seasonal_order=(1,0,2,4), 
+        enforce_stationarity=False, 
+        enforce_invertibility=False)
+
+results = model.fit(disp=False)
+
+results.summary()
+```
+
+An ARIMA model(4,0,2), which is just an ARMA(4,2) model had the lowest AIC and 
+every parameter is significant.  Let's predict on the train and test sets! Figure
+5 displays the LFPR to the predicted LFPR on the training set.  It seems to 
+capture the trend of the data.  However, you can see the model has trouble grabbing
+the highest and lowest points of the trend.  
+```{python}
+arima_pred = results.predict(start=0, end=len(train['lfpr'])-1, dynamic=False)
+```
+
+```{python}
+#| label: fig-LFPR5
+#| fig-cap: "Comparing the LFPR with the Predictions on the Train Set"
+plt.figure(figsize=(8, 6))
+
+# Plot actual values
+plt.plot(train.index, train['lfpr'], label='Actual', color='black')
+
+# Plot fitted/predicted values
+plt.plot(train.index, arima_pred, label='Predicted (ARIMA)', color='blue')
+
+
+plt.title('ARIMA Model: Train Predictions')
+plt.xlabel('Index')
+plt.ylabel('Labor Force Participation (LFPR)')
+plt.legend()
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+arima_pred2 = results.predict(start=0, end=len(test['lfpr'])-1, dynamic=False)
+
+#np.sqrt(np.mean((test.loc[2:, 'lfpr'] - arima_pred2.loc[2:])**2))
+
+```
+
+Test Root Mean Squared error is 1.017.  Figure 6 displays the LFPR to the 
+predicted LFPR on the test set.  Again, the model has its issues.  At some points,
+the model is under-and-over predicting.  It'll be interesting to see if the 
+LFPR increases based on this model.
+
+
+```{python}
+# Forecast 5 steps ahead
+forecast = results.get_forecast(steps=5)
+pred_mean = forecast.predicted_mean
+pred_ci = forecast.conf_int()
+
+```
+
+```{python}
+#| label: fig-LFPR6
+#| fig-cap: "Comparing the LFPR with the Predictions on the Test Set"
+
+plt.figure(figsize=(8, 6))
+
+# Plot actual values
+plt.plot(test.index, test['lfpr'], label='Actual', color='black')
+
+# Plot fitted/predicted values
+plt.plot(test.index, arima_pred2, label='Predicted (ARIMA)', color='blue')
+
+# Plot forecasted values
+forecast_index = range(len(test), len(test) + 5)
+plt.plot(forecast_index, pred_mean, label='Forecast', color='red', marker='o')
+
+# Plot confidence intervals
+plt.fill_between(forecast_index,
+                 pred_ci.iloc[:, 0],
+                 pred_ci.iloc[:, 1],
+                 color='pink', alpha=0.3, label='95% CI')
+
+plt.title('ARIMA Model: Test Predictions and 5-Step Forecast')
+plt.xlabel('Index')
+plt.ylabel('Labor Force Participation (LFPR)')
+plt.legend()
+plt.tight_layout()
+plt.show()
+```
+
+# Considerations
+
+I love Bayesian methodology and would consider trying that model for this 
+analysis.  I've also heard of using neural networks to capture the trend more
+precisely.  I tend to stray away from machine learning models because I like 
+statistical models more.
+
+# Thank You!
+
+Thank you for taking the time to read this report!  Feel free to leave any
+comments of what you would do.
