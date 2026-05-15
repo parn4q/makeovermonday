@@ -1,0 +1,142 @@
+---
+title: "Untitled"
+format: html
+---
+
+
+```{python}
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import geopandas as gp
+from adjustText import adjust_text
+
+```
+
+
+```{python}
+data = pd.read_csv("./US County PopMigration.csv")
+states_gdf = gp.read_file("https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json")
+```
+
+```{python}
+data.info()
+states_gdf.info()
+```
+
+```{python}
+df = (
+    pd.merge(
+        data, 
+        states_gdf, 
+        how = "left", 
+        left_on = "State", 
+        right_on = "name")
+    .drop(["name", "State FIPS", "County FIPS", "id", "density"], axis = 1)
+    .query("County != 'State Total'")
+)
+
+df = gp.GeoDataFrame(df, geometry = "geometry")
+```
+
+# What is net migration?
+
+Net migration is the balance of in-migrants minus out-migrants. The data do not include flows of in-migrants or out-migrants. Instead, these data include only the net balance.
+
+```{python}
+df_sum = df.groupby('State').agg({
+    'Net Male Migrants': 'sum',
+    'Net Female Migrants': 'sum',
+    'geometry': 'first'
+}).reset_index()
+
+
+df_sum = gp.GeoDataFrame(df_sum, geometry = 'geometry')
+```
+
+```{python}
+# 1. Filter data
+# 1. Filter data
+mainland = df_sum[~df_sum['State'].isin(['Alaska', 'Hawaii', 'Puerto Rico'])]
+
+# 2. Plotting Setup
+fig, ax = plt.subplots(1, 2, figsize=(16, 8))
+
+# Draw Maps
+for i, col in enumerate(["Net Male Migrants", "Net Female Migrants"]):
+    mainland.plot(
+        column=col,
+        ax=ax[i], 
+        legend=True,
+        cmap='RdYlGn', 
+        edgecolor='black',
+        legend_kwds={'label': f"{col} Population Change", 'orientation': "horizontal", 'pad': 0.05}
+    )
+    ax[i].axis('off')
+
+ax[0].set_title("Male", fontsize=18)
+ax[1].set_title("Female", fontsize=18)
+
+# 3. Labeling Logic
+east_coast = [
+    'Massachusetts', 'Rhode Island', 'Connecticut', 'New Jersey', 
+    'Delaware', 'Maryland', 'District of Columbia', 'New Hampshire', 'Vermont', 'Florida',
+    'Maine', 'North Carolina', 'Virginia'
+]
+
+for idx, row in mainland.iterrows():
+    # Use representative_point for the coordinates
+    coords = row['geometry'].representative_point().coords[0]
+    state_name = row['State']
+    m_val = f"{int(row['Net Male Migrants']):,}"
+    f_val = f"{int(row['Net Female Migrants']):,}"
+    
+    if state_name in east_coast:
+        # --- MANUAL OFFSET FOR EAST COAST ---
+        # We push these into the 'Atlantic' so they don't overlap
+        for i, val in enumerate([m_val, f_val]):
+            ax[i].annotate(
+                val, 
+                xy=(coords[0], coords[1]), 
+                xytext=(coords[0] + 6, coords[1] + 1), # Adjusted for visibility
+                fontsize=4.5,
+                fontweight='bold',
+                arrowprops=dict(arrowstyle='->', color='black', lw=0.1)
+            )
+    elif state_name == "Montana":
+        ax[0].text(coords[0], coords[1]-0.1, m_val, fontsize=5, 
+                   fontweight='bold', ha='center', va='center')
+        ax[1].text(coords[0], coords[1]-0.1, f_val, fontsize=5, 
+                   fontweight='bold', ha='center', va='center')
+
+    elif state_name == "Idaho":
+        ax[0].text(coords[0] + 0.25, coords[1]-1, m_val, fontsize=5, 
+                   fontweight='bold', ha='center', va='center')
+        ax[1].text(coords[0]+ 0.25, coords[1]-1, f_val, fontsize=5, 
+                   fontweight='bold', ha='center', va='center')
+
+    else:
+        # --- PERFECT CENTERING FOR EVERYTHING ELSE ---
+        # By NOT using adjust_text, these will stay exactly where you put them
+        ax[0].text(coords[0], coords[1], m_val, fontsize=5, 
+                   fontweight='bold', ha='center', va='center')
+        ax[1].text(coords[0], coords[1], f_val, fontsize=5, 
+                   fontweight='bold', ha='center', va='center')
+
+# 4. Titles and Descriptions
+fig.suptitle("Net Migration by Gender and State in 2020", y=0.8, fontsize=30)
+
+fig.text(
+    0.5, 0.7, 
+    "Definition: Net migration is the balance of in-migrants minus out-migrants.\n"
+    "The data do not include flows of in-migrants or out-migrants. Instead, these data include only the net balance.", 
+    ha='center', fontsize=12, style='italic', linespacing=1.4
+)
+
+# Crucial: Use subplots_adjust to prevent the layout engine from moving things
+plt.subplots_adjust(top=0.85, bottom=0.15, wspace=0.1)
+
+plt.savefig("./net_migrate_map.pdf", bbox_inches='tight')
+plt.show()
+```
