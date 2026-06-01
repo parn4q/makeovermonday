@@ -1,0 +1,79 @@
+
+begin
+    using CSV
+    using DataFrames
+    using CairoMakie
+    using AlgebraOfGraphics
+    using Printf
+    using Dates
+end
+
+df = CSV.read("./GPU performance per dollar.csv", DataFrame)
+
+df_sum = describe(df)
+
+rename!(df, "GPU performance per dollar" => "gpu_perf_per_dol")
+
+df.Day_numeric = Dates.value.(df.Day)
+
+
+begin
+    f = Figure(size = (1000, 600))
+
+    ax = Axis(
+        f[1,1],
+        xticks = (1:51, unique(df.Entity)),
+        xticklabelrotation = 45,
+        ytickformat = values -> [@sprintf("%.1fB", v / 1e9) for v in values],
+        title = "GPU Performance Per Dollar",
+        limits = (0, 52, nothing, nothing)
+    )
+
+    p = AlgebraOfGraphics.data(df) * 
+        mapping(:Entity, :gpu_perf_per_dol) *
+        visual(BarPlot)
+
+    draw!(ax, p)
+
+    f
+end
+
+nvid = filter(row -> contains(row.Entity, "NVIDIA"), df)
+
+nvid.Entity = strip.(replace.(nvid.Entity, "NVIDIA" => ""))
+
+begin
+    f = Figure(size = (1000, 600))
+
+    start_date = minimum(nvid.Day_numeric)
+    end_date = maximum(nvid.Day_numeric)
+    
+    tick_spacing = div(end_date - start_date, 20) 
+    custom_ticks = start_date:tick_spacing:end_date
+
+    ax = Axis(
+        f[1,1],
+        xticks = custom_ticks,
+        xticklabelrotation = 45,
+        xtickformat = values -> [Dates.format(Date(Dates.UTD(Int(v))), "u d, YYYY") for v in values],
+        ytickformat = values -> [@sprintf("%.0fB", v / 1e9) for v in values],
+        title = "NVIDIA GPU Performance Per Dollar",
+        titlealign = :left
+    )
+
+    # 1. Define the shared base mapping (X and Y coordinates)
+    base_plot = AlgebraOfGraphics.data(nvid) * mapping(:Day_numeric, :gpu_perf_per_dol)
+
+    # 2. Add the scatter layer and the text layer independently using `+`
+    # We multiply the text mapping ONLY into the Makie.Text visual
+    p = base_plot * (
+        visual(Scatter) + 
+        mapping(text = :Entity => verbatim) * visual(Makie.Text, align = (:left, :center), offset = (5, 0), fontsize = 6)
+    )
+
+    ag = draw!(ax, p)
+
+    legend!(f[1,2], ag, position = :top)
+
+    save("./mm.pdf", f)
+end
